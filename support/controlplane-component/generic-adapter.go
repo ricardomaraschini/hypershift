@@ -1,6 +1,8 @@
 package controlplanecomponent
 
 import (
+	"fmt"
+
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/k8sutil"
 
@@ -117,11 +119,21 @@ func (ga *genericAdapter) reconcile(cpContext ControlPlaneContext, obj client.Ob
 // and generates the appropriate config.yaml data.
 func NewGenericControllerConfigAdapter(bindAddress, bindNetwork string) func(WorkloadContext, *corev1.ConfigMap) error {
 	return func(cpContext WorkloadContext, cm *corev1.ConfigMap) error {
+		featureGates, err := config.FeatureGatesFromConfigMap(
+			cpContext.Context,
+			cpContext.Client,
+			cpContext.HCP.Namespace,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to load feature gates config map: %w", err)
+		}
 		return config.SetGenericControllerConfig(
 			bindAddress,
 			bindNetwork,
 			cpContext.HCP.Spec.Configuration.GetTLSSecurityProfile(),
 			cm,
+			featureGates,
+			cpContext.HCP.Spec.FIPS,
 		)
 	}
 }

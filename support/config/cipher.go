@@ -36,6 +36,74 @@ var openSSLToIANACiphersMap = map[string]string{
 	"ECDHE-RSA-AES256-SHA":   "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",   // 0xC0,0x14
 }
 
+// fipsTLSGroups are the groups our services are allowed to use when running
+// with FIPS enabled. X25519 and X25519MLKEM768 aren't yet formally validated
+// by NIST, that may take some time. The default behavior for new Curves is to
+// start as "not validated by NIST" so this list here works as an allow list.
+var fipsTLSGroups = map[configv1.TLSGroup]struct{}{
+	configv1.TLSGroupSecP256r1: {},
+	configv1.TLSGroupSecP384r1: {},
+	configv1.TLSGroupSecP521r1: {},
+}
+
+// fipsApprovedTLSGroups returns the subset of groups that are FIPS-approved,
+// preserving order and dropping the rest.
+func fipsApprovedTLSGroups(groups []configv1.TLSGroup) []configv1.TLSGroup {
+	approved := make([]configv1.TLSGroup, 0, len(groups))
+	for _, g := range groups {
+		if _, ok := fipsTLSGroups[g]; !ok {
+			continue
+		}
+		approved = append(approved, g)
+	}
+	return approved
+}
+
+// TLSGroups returns the configured TLS groups for the provided
+// TLSSecurityProfile, if no Profile has been selected returns
+// the Groups belonging to Intermediate. TLS Groups can't be
+// customized with the TLSv1.3 + Custom duo. Groups return may
+// vary if FIPS is enabled.
+func TLSGroups(securityProfile *configv1.TLSSecurityProfile, fips bool) (groups []configv1.TLSGroup, err error) {
+	// Defers applying the FIPS filter, if active.
+	defer func() {
+		if fips && err == nil {
+			groups = fipsApprovedTLSGroups(groups)
+		}
+	}()
+
+	// Defaults to Intermediate profile.
+	if securityProfile == nil {
+		return configv1.TLSProfiles[configv1.TLSProfileIntermediateType].Groups, nil
+	}
+
+	// Return the predefined groups for the known types.
+	if securityProfile.Type != configv1.TLSProfileCustomType {
+		return configv1.TLSProfiles[securityProfile.Type].Groups, nil
+	}
+
+	if securityProfile.Custom == nil {
+		return nil, fmt.Errorf("TLS profile type is Custom but Custom field is nil")
+	}
+
+	// If a list of Groups has been provided return immediately.
+	if len(securityProfile.Custom.Groups) > 0 {
+		return securityProfile.Custom.Groups, nil
+	}
+
+	// The user hasn't provided a list of Groups. We do a best effort
+	// to select a proper one based on the selected minimal TLS version,
+	// defaulting to Modern Groups as the user can't configure these.
+	switch securityProfile.Custom.MinTLSVersion {
+	case configv1.VersionTLS10, configv1.VersionTLS11:
+		return configv1.TLSProfiles[configv1.TLSProfileOldType].Groups, nil
+	case configv1.VersionTLS12:
+		return configv1.TLSProfiles[configv1.TLSProfileIntermediateType].Groups, nil
+	default:
+		return configv1.TLSProfiles[configv1.TLSProfileModernType].Groups, nil
+	}
+}
+
 func MinTLSVersion(securityProfile *configv1.TLSSecurityProfile) (string, error) {
 	if securityProfile == nil {
 		securityProfile = &configv1.TLSSecurityProfile{
